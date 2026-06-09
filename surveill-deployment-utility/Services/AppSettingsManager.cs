@@ -1,6 +1,7 @@
-﻿using System.Text.Json;
+﻿using Surveill.DeploymentUtility.App.Settings;
+using System.Text.Json;
 
-namespace Surveill.DeploymentUtility.App;
+namespace Surveill.DeploymentUtility.App.Services;
 
 public class AppSettingsManager
 {

@@ -2,23 +2,25 @@
 using Microsoft.TeamFoundation.Build.WebApi;
 using Microsoft.VisualStudio.Services.Common;
 using Microsoft.VisualStudio.Services.WebApi;
+using Surveill.DeploymentUtility.App.Enums;
 using Surveill.DeploymentUtility.App.Extensions;
+using Surveill.DeploymentUtility.App.Settings;
 using Terminal.Gui.Reflect.Base;
 using Terminal.Gui.Reflect.Interfaces;
 
-namespace Surveill.DeploymentUtility.App;
+namespace Surveill.DeploymentUtility.App.Services;
 
-public class PipelineStatusService : IPipelineStatusService
+public class DefaultAzureDevopsPipelineService : IDevopsPipelineService
 {
     private readonly AppSettingsManager           _appSettingsManager;
     private readonly IMemoryCache                 _memoryCache;
     private readonly IObservableTaskRunnerService _observableTaskRunnerService;
 
-    private readonly SemaphoreSlim         _workingSemaphore = new(1, 1);
-    private          List<BuildDefinition> _buildDefinitions;
-    private          IObservableTask       _currentFetchTask;
+    private readonly SemaphoreSlim          _workingSemaphore = new(1, 1);
+    private          List<BuildDefinition>? _buildDefinitions;
+    private          IObservableTask?       _currentFetchTask;
 
-    public PipelineStatusService(AppSettingsManager appSettingsManager, IMemoryCache memoryCache, IObservableTaskRunnerService observableTaskRunnerService)
+    public DefaultAzureDevopsPipelineService(AppSettingsManager appSettingsManager, IMemoryCache memoryCache, IObservableTaskRunnerService observableTaskRunnerService)
     {
         _appSettingsManager          = appSettingsManager          ?? throw new ArgumentNullException(nameof(appSettingsManager));
         _memoryCache                 = memoryCache                 ?? throw new ArgumentNullException(nameof(memoryCache));
@@ -27,47 +29,19 @@ public class PipelineStatusService : IPipelineStatusService
         _appSettingsManager.AppSettingsChanged += AppSettingsManagerOnAppSettingsChanged;
     }
 
-    public async Task<PipelineState> GetPipelineStateForBranchAsync(GitRepository repo, BranchType branchType)
-    {
-        var id = await FindPipelineIdByRepoAsync(repo.RepositoryName, branchType switch
-        {
-            BranchType.Alpha   => repo.AlphaBranch.Name,
-            BranchType.Beta    => repo.BetaBranch.Name,
-            BranchType.Release => repo.ReleaseBranch.Name,
-            _                  => throw new ArgumentOutOfRangeException(nameof(branchType), branchType, null)
-        });
-        return id != null ? await GetPipelineStatusAsync(id.Value) : PipelineState.Unknown;
-    }
-
     public async Task<PipelineState> GetPipelineStateForBranchAsync(GitRepositoryBranch repo) => repo.PipelineId != null ? await GetPipelineStatusAsync(repo.PipelineId!.Value) : PipelineState.Unknown;
-
-    public event Action? IsLoadingChanged;
-
-    public bool IsLoading
-    {
-        get;
-        set
-        {
-            if (value == field)
-            {
-                return;
-            }
-
-            field = value;
-            IsLoadingChanged?.Invoke();
-        }
-    }
 
     public async Task<int?> FindPipelineIdByRepoAsync(string repoName, string branch)
     {
-        // #todo terrible - redesign all of this
         if (_buildDefinitions == null)
         {
-            var             task = await ResolveAzureDevopsPipelineDefinitionsAsync();
-            await           task!.Task;
+            await ResolveAzureDevopsPipelineDefinitionsAsync();
         }
+
         return _buildDefinitions?
-              .FirstOrDefault(pipeline => string.Equals(GitRepositoryExtensions.ParseRepoName(pipeline.Repository.Id), repoName) && pipeline.Repository.DefaultBranch.Contains(branch))?.Id;
+           .FirstOrDefault(pipeline =>
+                               string.Equals(GitRepositoryExtensions.ParseRepoName(pipeline.Repository.Id), repoName)
+                            && pipeline.Repository.DefaultBranch.Contains(branch))?.Id;
     }
 
     private void AppSettingsManagerOnAppSettingsChanged()
@@ -87,29 +61,22 @@ public class PipelineStatusService : IPipelineStatusService
                 return _currentFetchTask;
             }
 
-            IsLoading = true;
-
             _currentFetchTask = _observableTaskRunnerService.RunTask(async cancellationToken =>
             {
-                var azureDevopsPipelineConfiguration = _appSettingsManager.AppSettings!.PipelineConfiguration;
-                var creds                            = new VssBasicCredential(string.Empty, azureDevopsPipelineConfiguration.Pat);
-                var connection                       = new VssConnection(new Uri($"https://dev.azure.com/{azureDevopsPipelineConfiguration.Organization}"), creds);
+                var                   azureDevopsPipelineConfiguration = _appSettingsManager.AppSettings!.PipelineConfiguration;
+                using var buildClient                      = ResolveClient(azureDevopsPipelineConfiguration);
 
-                using var buildClient = connection.GetClient<BuildHttpClient>();
-
-                // Full definitions include the repository
                 _buildDefinitions = await buildClient.GetFullDefinitionsAsync(
                                         project: azureDevopsPipelineConfiguration.Project,
                                         cancellationToken: cancellationToken);
             }, "Fetching Build Definitions", "Resolving pipeline build definitions for auto mapping pipeline ids.");
+            await _currentFetchTask.Task;
         }
         finally
         {
             if (isObtained)
             {
                 _workingSemaphore.Release();
-
-                IsLoading = false;
             }
         }
 
@@ -121,19 +88,12 @@ public class PipelineStatusService : IPipelineStatusService
         {
             entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(2);
 
-            var org     = _appSettingsManager.AppSettings!.PipelineConfiguration.Organization;
-            var project = _appSettingsManager.AppSettings.PipelineConfiguration.Project;
-            var pat     = _appSettingsManager.AppSettings.PipelineConfiguration.Pat;
+            var       azureDevopsPipelineConfiguration = _appSettingsManager.AppSettings!.PipelineConfiguration;
+            using var buildClient                      = ResolveClient(azureDevopsPipelineConfiguration);
 
-            var creds      = new VssBasicCredential(string.Empty, pat);
-            var connection = new VssConnection(new Uri($"https://dev.azure.com/{org}"), creds);
-
-            using var buildClient = connection.GetClient<BuildHttpClient>();
-
-            // Most recent run for this definition
             var builds = await buildClient.GetBuildsAsync(
-                             project,
-                             new[] { pipelineId },
+                             azureDevopsPipelineConfiguration.Project,
+                             [pipelineId],
                              top: 1,
                              queryOrder: BuildQueryOrder.QueueTimeDescending);
 
@@ -155,13 +115,28 @@ public class PipelineStatusService : IPipelineStatusService
                 _                                                                         => PipelineState.Unknown
             };
         });
+
+    private static BuildHttpClient ResolveClient(AzureDevopsPipelineConfiguration azureDevopsPipelineConfiguration)
+    {
+        BuildHttpClient? buildClient = null;
+        try
+        {
+            var creds      = new VssBasicCredential(string.Empty, azureDevopsPipelineConfiguration.Pat);
+            var connection = new VssConnection(new Uri($"https://dev.azure.com/{azureDevopsPipelineConfiguration.Organization}"), creds);
+
+            buildClient = connection.GetClient<BuildHttpClient>();
+            return buildClient;
+        }
+        catch
+        {
+            buildClient?.Dispose();
+            throw;
+        }
+    }
 }
 
-public interface IPipelineStatusService
+public interface IDevopsPipelineService
 {
-    bool                 IsLoading { get; set; }
-    Task<PipelineState>  GetPipelineStateForBranchAsync(GitRepository repo, BranchType branchType);
-    public event Action? IsLoadingChanged;
     Task<PipelineState>  GetPipelineStateForBranchAsync(GitRepositoryBranch repo);
     Task<int?>           FindPipelineIdByRepoAsync(string                   repoName, string branch);
 }

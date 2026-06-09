@@ -1,4 +1,6 @@
 ﻿using Surveill.DeploymentUtility.App.Extensions;
+using Surveill.DeploymentUtility.App.Services;
+using Surveill.DeploymentUtility.App.Settings;
 using System.Collections.ObjectModel;
 using Terminal.Gui.App;
 using Terminal.Gui.Input;
@@ -12,7 +14,7 @@ namespace Surveill.DeploymentUtility.App.Views.Dialogs;
 internal class AddEditRepositoryDialog : ViewController<Dialog, AddEditRepositoryViewModel>
 {
     private readonly IApplication           _application;
-    private readonly IPipelineStatusService _pipelineStatusService;
+    private readonly IDevopsPipelineService _devopsPipelineService;
     private          Button                 _cancelBtn;
     private          TextField              _repositoryNameTextbox;
     private          Button                 _repositoryPathOpenDialogBtn;
@@ -28,10 +30,10 @@ internal class AddEditRepositoryDialog : ViewController<Dialog, AddEditRepositor
     private GitRepositoryBranch?  _selectedBranch;
     private Button                _autoResolvePipelineIdsButton;
 
-    public AddEditRepositoryDialog(IApplication application, IPipelineStatusService pipelineStatusService)
+    public AddEditRepositoryDialog(IApplication application, IDevopsPipelineService devopsPipelineService)
     {
         _application           = application           ?? throw new ArgumentNullException(nameof(application));
-        _pipelineStatusService = pipelineStatusService ?? throw new ArgumentNullException(nameof(pipelineStatusService));
+        _devopsPipelineService = devopsPipelineService ?? throw new ArgumentNullException(nameof(devopsPipelineService));
     }
  
     public override void InitializeComponents()
@@ -252,7 +254,7 @@ internal class AddEditRepositoryDialog : ViewController<Dialog, AddEditRepositor
             {
                 try
                 {
-                    branch.PipelineId = await _pipelineStatusService.FindPipelineIdByRepoAsync(ViewModel.RepositoryName, branch.Name);
+                    branch.PipelineId = await _devopsPipelineService.FindPipelineIdByRepoAsync(ViewModel.RepositoryName, branch.Name);
                 }
                 catch (Exception e)
                 {

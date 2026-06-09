@@ -1,4 +1,6 @@
-﻿namespace Surveill.DeploymentUtility.App.Extensions;
+﻿using Surveill.DeploymentUtility.App.Settings;
+
+namespace Surveill.DeploymentUtility.App.Extensions;
 
 public static class GitRepositoryExtensions
 {

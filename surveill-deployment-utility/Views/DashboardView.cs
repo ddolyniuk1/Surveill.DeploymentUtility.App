@@ -4,6 +4,9 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Data;
 using System.Runtime.CompilerServices;
+using Surveill.DeploymentUtility.App.Enums;
+using Surveill.DeploymentUtility.App.Services;
+using Surveill.DeploymentUtility.App.Settings;
 using Surveill.DeploymentUtility.App.Views.Dialogs;
 using Terminal.Gui.App;
 using Terminal.Gui.Drivers;
@@ -261,8 +264,8 @@ public class DashboardView : ViewController<FrameView, DashboardViewModel>
 
         var message = to switch
         {
-            BranchType.Beta    => $"Automated merge - sprint {major}.{minor} completed.",
-            BranchType.Release => $"Automated merge - quarter {(DateTimeOffset.Now.Month + 2) / 3}",
+            BranchType.Beta    => $"Automated merge - Sprint {major}.{minor} Completed.",
+            BranchType.Release => $"Automated merge - Quarterly Release {(DateTimeOffset.Now.Month + 2) / 3}",
             BranchType.Alpha   => throw new NotSupportedException("Cannot merge to Alpha"),
             _                  => throw new ArgumentOutOfRangeException(nameof(to), to, null)
         };
@@ -270,7 +273,7 @@ public class DashboardView : ViewController<FrameView, DashboardViewModel>
         _appSettingsManager.AppSettings.SprintVersion = $"{major}.{minor + 1}";
         await _appSettingsManager.SaveAsync();
 
-        foreach (var repo in _appSettingsManager.AppSettings!.GitRepositories)
+        foreach (var repo in _appSettingsManager.AppSettings!.GitRepositories.Where(t => !t.PipelineDependencies.Any()))
         {
             _observableTaskRunnerService.RunTask(
                 async (progress, token) =>
@@ -280,8 +283,10 @@ public class DashboardView : ViewController<FrameView, DashboardViewModel>
 
                     try
                     {
+                        await _gitCliService.ExecuteAsync(["stash", "push", "--include-untracked"], repo.Directory, cancellationTokenSource.Token);
+                        progress.Report(10);
                         await _gitCliService.ExecuteAsync(["checkout", repo.AllBranches[from].Name], repo.Directory, cancellationTokenSource.Token);
-                        progress.Report(20);
+                        progress.Report(25);
                         await _gitCliService.ExecuteAsync(["pull"], repo.Directory, cancellationTokenSource.Token);
                         progress.Report(40);
                         await _gitCliService.ExecuteAsync(["checkout", repo.AllBranches[to].Name], repo.Directory, cancellationTokenSource.Token);
@@ -303,23 +308,21 @@ public class DashboardView : ViewController<FrameView, DashboardViewModel>
         SetStatus("Ready.");
     }
 
-    private Task TaskFactory(IProgress<int> arg1, CancellationToken arg2) => throw new NotImplementedException();
-
-    private async Task OnAddAsync()
+    private Task OnAddAsync()
     {
         var dialog = _viewControllerFactory.Create<AddEditRepositoryDialog>();
 
         var result = _application.Run(dialog.Root);
 
         _appSettingsManager.AppSettings!.GitRepositories = [.._appSettingsManager.AppSettings.GitRepositories, dialog.ViewModel];
-        await _appSettingsManager.SaveAsync();
+        return _appSettingsManager.SaveAsync();
     }
 
-    private async Task OnEditAsync()
+    private Task OnEditAsync()
     {
         if (Selected is null)
         {
-            return;
+            return Task.CompletedTask;
         }
 
         var newArr = _appSettingsManager.AppSettings!
@@ -333,14 +336,14 @@ public class DashboardView : ViewController<FrameView, DashboardViewModel>
         var result = _application.Run(dialog.Root);
 
         _appSettingsManager.AppSettings.GitRepositories = [..newArr, dialog.ViewModel];
-        await _appSettingsManager.SaveAsync();
+        return _appSettingsManager.SaveAsync();
     }
 
-    private async Task OnRemoveAsync()
+    private Task OnRemoveAsync()
     {
         if (Selected is not { } item)
         {
-            return;
+            return Task.CompletedTask;
         }
 
         var newArr = _appSettingsManager.AppSettings!
@@ -348,11 +351,14 @@ public class DashboardView : ViewController<FrameView, DashboardViewModel>
                                         .Where(t => t.RepositoryName != Selected.Repository.RepositoryName)
                                         .ToArray();
 
-        if (MessageBox.Query(_application, "Remove", $"Remove {item.Repository.DisplayName}?", "Cancel", "Remove") == 1)
+        if (MessageBox.Query(_application, "Remove", $"Remove {item.Repository.DisplayName}?", "Cancel", "Remove") != 1)
         {
-            _appSettingsManager.AppSettings.GitRepositories = [..newArr];
-            await _appSettingsManager.SaveAsync();
+            return Task.CompletedTask;
         }
+
+        _appSettingsManager.AppSettings.GitRepositories = [..newArr];
+        return _appSettingsManager.SaveAsync();
+
     }
 
     private void SetStatus(string text)
@@ -362,66 +368,16 @@ public class DashboardView : ViewController<FrameView, DashboardViewModel>
     }
 }
 
-public class GitRepositoryItemModel : INotifyPropertyChanged
-{
-    private readonly IPipelineStatusService _pipelineStatusService;
-
-    public GitRepositoryItemModel(GitRepository repositoryModel, IPipelineStatusService pipelineStatusService)
-    {
-        Repository             = repositoryModel       ?? throw new ArgumentNullException(nameof(repositoryModel));
-        _pipelineStatusService = pipelineStatusService ?? throw new ArgumentNullException(nameof(pipelineStatusService));
-    }
-
-    public GitRepository Repository { get; }
-
-    public ImmutableDictionary<BranchType, PipelineState> PipelineStates
-    {
-        get;
-        set => SetField(ref field, value);
-    } = [];
-
-    public event PropertyChangedEventHandler? PropertyChanged;
-
-    public async Task RefreshStates()
-    {
-        var imm = new Dictionary<BranchType, PipelineState>();
-        foreach (var branchType in Enum.GetValues<BranchType>())
-        {
-            var branches = Repository.AllBranches;
-            imm[branchType] = await _pipelineStatusService.GetPipelineStateForBranchAsync(branches[branchType]);
-        }
-
-        PipelineStates = imm.ToImmutableDictionary();
-    }
-
-    protected virtual void OnPropertyChanged([CallerMemberName] string? propertyName = null)
-    {
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
-    }
-
-    private bool SetField<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
-    {
-        if (EqualityComparer<T>.Default.Equals(field, value))
-        {
-            return false;
-        }
-
-        field = value;
-        OnPropertyChanged(propertyName);
-        return true;
-    }
-}
-
 public class DashboardViewModel : INotifyPropertyChanged
 {
     private readonly AppSettingsManager     _appSettingsManager;
-    private readonly IPipelineStatusService _pipelineStatusService;
+    private readonly IDevopsPipelineService _devopsPipelineService;
 
     public DashboardViewModel(AppSettingsManager appSettingsManager,
-        IPipelineStatusService                   pipelineStatusService)
+        IDevopsPipelineService                   devopsPipelineService)
     {
         _appSettingsManager                    =  appSettingsManager    ?? throw new ArgumentNullException(nameof(appSettingsManager));
-        _pipelineStatusService                 =  pipelineStatusService ?? throw new ArgumentNullException(nameof(pipelineStatusService));
+        _devopsPipelineService                 =  devopsPipelineService ?? throw new ArgumentNullException(nameof(devopsPipelineService));
         _                                      =  LoadSettingsAsync();
         _appSettingsManager.AppSettingsChanged += AppSettingsManagerOnAppSettingsChanged;
     }
@@ -455,7 +411,7 @@ public class DashboardViewModel : INotifyPropertyChanged
         foreach (var repo in AppSettings!.GitRepositories)
         {
             Repositories.Add(repo);
-            Items.Add(new GitRepositoryItemModel(repo, _pipelineStatusService));
+            Items.Add(new GitRepositoryItemModel(repo, _devopsPipelineService));
         }
     }
 

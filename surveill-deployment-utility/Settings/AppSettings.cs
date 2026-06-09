@@ -1,16 +1,17 @@
-﻿using System.Collections.Immutable;
+﻿using Surveill.DeploymentUtility.App.Enums;
+using System.Collections.Immutable;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
 
-namespace Surveill.DeploymentUtility.App;
+namespace Surveill.DeploymentUtility.App.Settings;
 
 public class AppSettings
 {
     public AzureDevopsPipelineConfiguration PipelineConfiguration { get; set; } = new();
     public GitRepository[]                  GitRepositories       { get; set; } = [];
-    
-    public string SprintVersion { get; set; }
+
+    public string SprintVersion { get; set; } = "0.0";
 }
 
 public class GitRepository : INotifyPropertyChanged
@@ -53,6 +54,12 @@ public class GitRepository : INotifyPropertyChanged
         Name       = "release",
         PipelineId = null
     };
+
+    public string[] PipelineDependencies
+    {
+        get;
+        set => SetField(ref field, value);
+    } = [];
 
     [JsonIgnore]
     public ImmutableDictionary<BranchType, GitRepositoryBranch> AllBranches => field ??= new Dictionary<BranchType, GitRepositoryBranch>

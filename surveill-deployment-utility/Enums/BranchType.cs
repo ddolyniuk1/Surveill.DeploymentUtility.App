@@ -1,4 +1,4 @@
-﻿namespace Surveill.DeploymentUtility.App;
+﻿namespace Surveill.DeploymentUtility.App.Enums;
 
 public enum BranchType
 {
