@@ -379,9 +379,9 @@ public class AddEditRepositoryViewModel : GitRepository
     public void Copy(GitRepository original)
     {
         Directory = original.Directory;
-        AlphaBranch.Clone(original.AlphaBranch);
-        BetaBranch.Clone(original.BetaBranch);
-        ReleaseBranch.Clone(original.ReleaseBranch);
+        AlphaBranch.Copy(original.AlphaBranch);
+        BetaBranch.Copy(original.BetaBranch);
+        ReleaseBranch.Copy(original.ReleaseBranch);
         DisplayName    = original.DisplayName;
         RepositoryName = original.RepositoryName;
     }
